@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "510566681754",
+    "project_id": "tvaproject-80603",
+    "storage_bucket": "tvaproject-80603.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:510566681754:android:6db89b2cea199282e2e323",
+        "android_client_info": {
+          "package_name": "com.example.tva"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDx480c6LbUCMVbLcdVf4G74qxCYi_qcvU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
