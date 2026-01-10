@@ -2,9 +2,9 @@ package com.example.tva
 
 import android.Manifest
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
-import android.content.IntentSender
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -38,52 +38,44 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            var trackerId by remember { mutableStateOf("") }
-            var isRunning by remember { mutableStateOf(false) }
-            val context = LocalContext.current
+            val ctx = LocalContext.current
+            val prefs = remember { ctx.getSharedPreferences("gps_prefs", MODE_PRIVATE) }
+            
+            var trackerId by remember { mutableStateOf(prefs.getString("active_id", "") ?: "") }
+            var isRunning by remember { mutableStateOf(isServiceRunning(ctx)) }
 
-            LaunchedEffect(isRunning) {
-                if (!isRunning) {
-                    generateUniqueId { trackerId = it }
+            LaunchedEffect(Unit) {
+                if (!isRunning && trackerId.isEmpty()) {
+                    genId { id ->
+                        trackerId = id
+                        prefs.edit().putString("active_id", id).apply()
+                    }
                 }
             }
 
-            val settingsLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.StartIntentSenderForResult()
-            ) { result ->
-                if (result.resultCode == Activity.RESULT_OK) {
-                    startService(context, trackerId)
+            val setLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+                if (res.resultCode == RESULT_OK) {
+                    start(ctx, trackerId)
                     isRunning = true
                 }
             }
 
-            val permissionLauncher = rememberLauncherForActivityResult(
-                ActivityResultContracts.RequestMultiplePermissions()
-            ) { perms ->
+            val pLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
                 if (perms[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-                    checkSettings(context, 
-                        {
-                            startService(context, trackerId)
-                            isRunning = true
-                        },
-                        { settingsLauncher.launch(it) }
-                    )
+                    checkGps(ctx, {
+                        start(ctx, trackerId)
+                        isRunning = true
+                    }, { setLauncher.launch(it) })
                 }
             }
 
-            Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Surface(modifier = Modifier.fillMaxSize()) {
                 Column(
                     modifier = Modifier.fillMaxSize().padding(24.dp),
                     verticalArrangement = Arrangement.SpaceEvenly,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(180.dp)
-                            .clip(CircleShape)
-                            .border(3.dp, Color(0xFF20B2AA), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
+                    Box(modifier = Modifier.size(180.dp).clip(CircleShape).border(3.dp, Color(0xFF20B2AA), CircleShape)) {
                         Image(
                             painter = painterResource(id = R.drawable.logo),
                             contentDescription = null,
@@ -99,7 +91,6 @@ class MainActivity : ComponentActivity() {
 
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("ВАШ ПЕРСОНАЛЬНЫЙ КОД:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
-                        Spacer(modifier = Modifier.height(8.dp))
                         Text(trackerId, fontSize = 48.sp, fontWeight = FontWeight.Black, color = Color(0xFF20B2AA))
                     }
 
@@ -109,10 +100,16 @@ class MainActivity : ComponentActivity() {
                                 if (trackerId.isEmpty()) return@Button
                                 val p = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
                                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) p.add(Manifest.permission.POST_NOTIFICATIONS)
-                                permissionLauncher.launch(p.toTypedArray())
+                                pLauncher.launch(p.toTypedArray())
                             } else {
-                                context.stopService(Intent(context, LocationService::class.java))
+                                db.document("trackers/$trackerId").delete()
+                                ctx.stopService(Intent(ctx, LocationService::class.java))
                                 isRunning = false
+                                
+                                genId { id ->
+                                    trackerId = id
+                                    prefs.edit().putString("active_id", id).apply()
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth().height(65.dp),
@@ -126,27 +123,31 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun generateUniqueId(onDone: (String) -> Unit) {
-        val id = (10000000..99999999).random().toString()
-        db.collection("trackers").document(id).get()
-            .addOnSuccessListener { if (it.exists()) generateUniqueId(onDone) else onDone(id) }
-            .addOnFailureListener { onDone(id) }
+    private fun isServiceRunning(ctx: Context): Boolean {
+        val am = ctx.getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        return am.getRunningServices(Int.MAX_VALUE).any { it.service.className == LocationService::class.java.name }
     }
 
-    private fun checkSettings(context: Context, onOk: () -> Unit, onFail: (IntentSenderRequest) -> Unit) {
+    private fun genId(done: (String) -> Unit) {
+        val id = (10000000..99999999).random().toString()
+        db.document("trackers/$id").get().addOnSuccessListener { 
+            if (it.exists()) genId(done) else done(id) 
+        }.addOnFailureListener { done(id) }
+    }
+
+    private fun checkGps(ctx: Context, ok: () -> Unit, fail: (IntentSenderRequest) -> Unit) {
         val req = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5000).build()
-        val builder = LocationSettingsRequest.Builder().addLocationRequest(req)
-        LocationServices.getSettingsClient(context).checkLocationSettings(builder.build())
-            .addOnSuccessListener { onOk() }
+        LocationServices.getSettingsClient(ctx).checkLocationSettings(LocationSettingsRequest.Builder().addLocationRequest(req).build())
+            .addOnSuccessListener { ok() }
             .addOnFailureListener { e ->
-                if (e is ResolvableApiException) onFail(IntentSenderRequest.Builder(e.resolution).build())
-                else context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                if (e is ResolvableApiException) fail(IntentSenderRequest.Builder(e.resolution).build())
+                else ctx.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
             }
     }
 
-    private fun startService(context: Context, id: String) {
-        val intent = Intent(context, LocationService::class.java).apply { putExtra("TRACKER_ID", id) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent)
-        else context.startService(intent)
+    private fun start(ctx: Context, id: String) {
+        val i = Intent(ctx, LocationService::class.java).apply { putExtra("TRACKER_ID", id) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
+        else ctx.startService(i)
     }
 }
